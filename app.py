@@ -121,54 +121,34 @@ def load_documents():
 
 @st.cache_resource
 def load_qwen_model():
-    """Load Qwen model with error handling"""
+    """PROPER Qwen model loading"""
     try:
         st.info("🔄 Loading Qwen 2.5-1.5B Model...")
         
-        # Use the exact same model name as your Colab notebook
+        # FORCE online download (don't use local files)
         gen_model_name = "Qwen/Qwen2.5-1.5B-Instruct"
         
-        # Try to load from local files first, then from HuggingFace
-        try:
-            # First try local files
-            tokenizer = AutoTokenizer.from_pretrained(
-                ".",
-                trust_remote_code=True,
-                local_files_only=True
-            )
-            generator = AutoModelForCausalLM.from_pretrained(
-                ".",
-                device_map="auto",
-                torch_dtype=torch.float16,
-                trust_remote_code=True,
-                local_files_only=True
-            )
-            st.success("✅ Qwen model loaded from local files!")
-            
-        except Exception as local_error:
-            st.warning("⚠️ Local model not found, downloading from HuggingFace...")
-            # Fallback to online download (same as Colab)
-            tokenizer = AutoTokenizer.from_pretrained(
-                gen_model_name,
-                trust_remote_code=True
-            )
-            generator = AutoModelForCausalLM.from_pretrained(
-                gen_model_name,
-                device_map="auto",
-                torch_dtype=torch.float16,
-                trust_remote_code=True
-            )
-            st.success("✅ Qwen model downloaded and loaded!")
+        tokenizer = AutoTokenizer.from_pretrained(
+            gen_model_name,
+            trust_remote_code=True
+        )
         
-        # Ensure pad token is set
+        generator = AutoModelForCausalLM.from_pretrained(
+            gen_model_name,
+            device_map="auto",
+            torch_dtype=torch.float16,
+            trust_remote_code=True
+        )
+        
+        # CRITICAL: Set pad token
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
             
+        st.success("✅ Qwen model loaded properly!")
         return tokenizer, generator
         
     except Exception as e:
         st.error(f"❌ Error loading Qwen model: {e}")
-        st.info("💡 Try running: `pip install transformers accelerate`")
         return None, None
 
 def retrieve_documents(query, model, index, documents, top_k=5):
@@ -208,36 +188,63 @@ def retrieve_documents(query, model, index, documents, top_k=5):
         st.error(f"Error in retrieval: {e}")
         return []
 
-def generate_answer(query, retrieved_docs, tokenizer, generator, max_tokens=300):
-    """QUICK FIX for index out of range error"""
+def generate_answer(query, retrieved_docs, tokenizer, generator, max_tokens=400):
+    """PROPER generation function that matches Colab output"""
     try:
-        # EXTREMELY conservative approach
-        context = ""
-        for i, doc in enumerate(retrieved_docs[:1]):  # ONLY USE TOP 1 DOCUMENT
-            doc_text = doc["text"][:300]  # ONLY 300 CHARACTERS
-            context += f"Doc {i+1}: {doc_text}\n"
-        
-        prompt = f"Context: {context}\nQuestion: {query}\nAnswer:"
-        
-        # Very safe tokenization
-        inputs = tokenizer(prompt, return_tensors="pt", max_length=512, truncation=True)
-        inputs = {k: v.to(generator.device) for k, v in inputs.items()}
-        
-        # Very safe generation
+        # PROPER context extraction (like your Colab)
+        context_parts = []
+        for i, doc in enumerate(retrieved_docs[:3]):  # Use top 3 docs like Colab
+            doc_text = doc["text"].strip()
+            
+            # Proper truncation (like your Colab)
+            if len(doc_text) > 800:
+                trunc_point = doc_text[:800].rfind('.')
+                if trunc_point > 400:
+                    doc_text = doc_text[:trunc_point + 1]
+                else:
+                    doc_text = doc_text[:800] + "..."
+            context_parts.append(f"Document {i+1}: {doc_text}")
+
+        context = "\n\n".join(context_parts)
+
+        # PROPER prompt (like your Colab)
+        prompt = f"""Based on the following clinical documentation, provide a concise medical assessment.
+
+CLINICAL DOCUMENTATION:
+{context}
+
+CLINICAL QUESTION: {query}
+
+MEDICAL ASSESSMENT:"""
+
+        # PROPER tokenization (like your Colab)
+        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048).to(generator.device)
+
+        # PROPER generation (like your Colab)
         with torch.no_grad():
             outputs = generator.generate(
                 **inputs,
-                max_new_tokens=200,  # Very short
+                max_new_tokens=max_tokens,
                 temperature=0.3,
-                do_sample=False,  # Disable sampling for stability
-                pad_token_id=tokenizer.eos_token_id
+                do_sample=True,
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                repetition_penalty=1.2
             )
-        
-        answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        return answer.split("Answer:")[-1].strip() if "Answer:" in answer else answer
-        
+
+        # PROPER output extraction (like your Colab)
+        full_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+        # Extract only the generated assessment
+        if "MEDICAL ASSESSMENT:" in full_output:
+            answer = full_output.split("MEDICAL ASSESSMENT:")[-1].strip()
+        else:
+            answer = full_output
+
+        return answer
+
     except Exception as e:
-        return f"Safe generation completed. Error details: {str(e)}"
+        return f"Error in generation: {str(e)}"
 
 def alternative_generate_answer(query, retrieved_docs):
     """Alternative generation without model - for emergency fallback"""
@@ -294,7 +301,7 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
         top_k = st.slider("Number of documents to retrieve", 1, 10, 5)
-        max_tokens = st.slider("Maximum answer tokens", 100, 400, 200)
+        max_tokens = st.slider("Maximum answer tokens", 200, 600, 400)  # Increased range
         
         st.header("📊 System Status")
         
@@ -321,7 +328,7 @@ def main():
         st.header("🔧 Generation Mode")
         generation_mode = st.radio(
             "Select generation approach:",
-            ["Safe Mode (Recommended)", "Alternative Mode", "Both"],
+            ["Qwen Model (Recommended)", "Alternative Mode", "Both"],
             index=0
         )
         
@@ -377,33 +384,33 @@ def main():
             st.session_state.current_query = query
             
             # Generate answers based on selected mode
-            with st.spinner("🤔 Generating clinical assessment..."):
-                if generation_mode in ["Safe Mode (Recommended)", "Both"] and generator:
-                    safe_answer = generate_answer(query, retrieved_docs, tokenizer, generator, max_tokens)
-                    st.session_state.safe_answer = safe_answer
+            with st.spinner("🤔 Generating clinical assessment (this may take 20-30 seconds)..."):
+                if generation_mode in ["Qwen Model (Recommended)", "Both"] and generator:
+                    qwen_answer = generate_answer(query, retrieved_docs, tokenizer, generator, max_tokens)
+                    st.session_state.qwen_answer = qwen_answer
                 
                 if generation_mode in ["Alternative Mode", "Both"]:
                     alt_answer = alternative_generate_answer(query, retrieved_docs)
                     st.session_state.alt_answer = alt_answer
     
     # Display results
-    if hasattr(st.session_state, 'safe_answer') or hasattr(st.session_state, 'alt_answer'):
+    if hasattr(st.session_state, 'qwen_answer') or hasattr(st.session_state, 'alt_answer'):
         st.markdown("---")
         st.markdown("### 💡 AI Clinical Assessment")
         
-        # Display Safe Mode answer
-        if hasattr(st.session_state, 'safe_answer'):
-            st.markdown("#### 🔒 Safe Mode Generation")
+        # Display Qwen Model answer
+        if hasattr(st.session_state, 'qwen_answer'):
+            st.markdown("#### 🤖 Qwen Model Generation")
             with st.container():
-                if "error" in st.session_state.safe_answer.lower():
+                if "error" in st.session_state.qwen_answer.lower():
                     st.markdown('<div class="warning-box">', unsafe_allow_html=True)
                     st.markdown("**Qwen Model Output:**")
-                    st.write(st.session_state.safe_answer)
+                    st.write(st.session_state.qwen_answer)
                     st.markdown('</div>', unsafe_allow_html=True)
                 else:
                     st.markdown('<div class="model-output">', unsafe_allow_html=True)
-                    st.markdown("**Qwen Model Assessment:**")
-                    st.write(st.session_state.safe_answer)
+                    st.markdown("**Clinical Assessment:**")
+                    st.write(st.session_state.qwen_answer)
                     st.markdown('</div>', unsafe_allow_html=True)
         
         # Display Alternative Mode answer
@@ -456,14 +463,14 @@ def main():
         st.metric("Total Documents", len(documents) if documents else 0)
     
     with col2:
-        if hasattr(st.session_state, 'safe_answer'):
-            status = "⚠️" if "error" in st.session_state.safe_answer.lower() else "✅"
+        if hasattr(st.session_state, 'qwen_answer'):
+            status = "⚠️" if "error" in st.session_state.qwen_answer.lower() else "✅"
             st.metric("Generation Status", status)
         else:
             st.metric("Ready", "🔍")
     
     with col3:
-        st.metric("Retrieval Engine", "FAISS")
+        st.metric("AI Model", "Qwen 2.5B")
     
     st.markdown("""
     <div style='text-align: center; color: #666; margin-top: 2rem;'>
