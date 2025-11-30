@@ -59,13 +59,6 @@ st.markdown("""
         margin: 1rem 0;
         white-space: pre-wrap;
     }
-    .warning-box {
-        background-color: #fff3cd;
-        padding: 1rem;
-        border-radius: 8px;
-        border-left: 4px solid #ffc107;
-        margin: 1rem 0;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -121,7 +114,7 @@ def load_documents():
 
 @st.cache_resource
 def load_qwen_model():
-    """Load Qwen model with error handling"""
+    """Load Qwen model - USING THE SAME APPROACH AS YOUR COLAB NOTEBOOK"""
     try:
         st.info("🔄 Loading Qwen 2.5-1.5B Model...")
         
@@ -160,10 +153,6 @@ def load_qwen_model():
             )
             st.success("✅ Qwen model downloaded and loaded!")
         
-        # Ensure pad token is set
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-            
         return tokenizer, generator
         
     except Exception as e:
@@ -208,83 +197,64 @@ def retrieve_documents(query, model, index, documents, top_k=5):
         st.error(f"Error in retrieval: {e}")
         return []
 
-def generate_answer(query, retrieved_docs, tokenizer, generator, max_tokens=300):
-    """QUICK FIX for index out of range error"""
+def generate_answer(query, retrieved_docs, tokenizer, generator, max_tokens=400):
+    """GENERATE ANSWER - USING THE EXACT SAME CODE FROM YOUR COLAB NOTEBOOK"""
     try:
-        # EXTREMELY conservative approach
-        context = ""
-        for i, doc in enumerate(retrieved_docs[:1]):  # ONLY USE TOP 1 DOCUMENT
-            doc_text = doc["text"][:300]  # ONLY 300 CHARACTERS
-            context += f"Doc {i+1}: {doc_text}\n"
-        
-        prompt = f"Context: {context}\nQuestion: {query}\nAnswer:"
-        
-        # Very safe tokenization
-        inputs = tokenizer(prompt, return_tensors="pt", max_length=512, truncation=True)
-        inputs = {k: v.to(generator.device) for k, v in inputs.items()}
-        
-        # Very safe generation
-        with torch.no_grad():
-            outputs = generator.generate(
-                **inputs,
-                max_new_tokens=200,  # Very short
-                temperature=0.3,
-                do_sample=False,  # Disable sampling for stability
-                pad_token_id=tokenizer.eos_token_id
-            )
-        
-        answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        return answer.split("Answer:")[-1].strip() if "Answer:" in answer else answer
-        
-    except Exception as e:
-        return f"Safe generation completed. Error details: {str(e)}"
+        # EXACT SAME CONTEXT EXTRACTION AS COLAB
+        context_parts = []
+        for i, doc in enumerate(retrieved_docs[:3]):  # Limit to avoid duplicates
+            doc_text = doc["text"].strip()
+            # Take first 800 characters or until sentence end (SAME AS COLAB)
+            if len(doc_text) > 800:
+                trunc_point = doc_text[:800].rfind('.')
+                if trunc_point > 500:
+                    doc_text = doc_text[:trunc_point+1]
+                else:
+                    doc_text = doc_text[:800] + "..."
+            context_parts.append(f"Document {i+1}: {doc_text}")
 
-def alternative_generate_answer(query, retrieved_docs):
-    """Alternative generation without model - for emergency fallback"""
-    try:
-        if not retrieved_docs:
-            return "No relevant clinical documents found for your query."
-        
-        # Extract key terms and create a smart summary
-        high_score_docs = [doc for doc in retrieved_docs if doc['score'] > 0.6]
-        doc_count = len(retrieved_docs)
-        avg_score = sum(doc['score'] for doc in retrieved_docs) / doc_count
-        
-        # Create a structured response based on retrieved content
-        response_parts = []
-        response_parts.append(f"**Clinical Query Analysis**")
-        response_parts.append(f"Query: '{query}'")
-        response_parts.append(f"Found {doc_count} relevant clinical documents (average relevance: {avg_score:.3f})")
-        
-        if high_score_docs:
-            response_parts.append(f"**High-Relevance Findings**: {len(high_score_docs)} documents with strong clinical relevance")
-        
-        # Extract key snippets from documents
-        clinical_terms = []
-        for doc in retrieved_docs[:2]:
-            text_lower = doc['text'].lower()
-            if 'stroke' in text_lower:
-                clinical_terms.append("stroke-related content")
-            if 'diagnosis' in text_lower:
-                clinical_terms.append("diagnostic information")
-            if 'treatment' in text_lower:
-                clinical_terms.append("treatment protocols")
-            if 'symptom' in text_lower:
-                clinical_terms.append("symptom documentation")
-        
-        if clinical_terms:
-            unique_terms = list(set(clinical_terms))
-            response_parts.append(f"**Document Content Includes**: {', '.join(unique_terms)}")
-        
-        response_parts.append("\n**Recommendation**: Review the specific clinical documents below for detailed patient information and medical findings.")
-        
-        return "\n\n".join(response_parts)
-        
+        context = "\n\n".join(context_parts)
+
+        # EXACT SAME PROMPT TEMPLATE AS COLAB
+        prompt = f"""Based on the following clinical documentation, provide a concise medical assessment.
+
+CLINICAL DOCUMENTATION:
+{context}
+
+CLINICAL QUESTION: {query}
+
+MEDICAL ASSESSMENT:"""
+
+        # EXACT SAME GENERATION PARAMETERS AS COLAB
+        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048).to(generator.device)
+
+        # EXACT SAME GENERATION CALL AS COLAB
+        output = generator.generate(
+            **inputs,
+            max_new_tokens=max_tokens,
+            temperature=0.3,
+            do_sample=True,
+            pad_token_id=tokenizer.eos_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+            repetition_penalty=1.2
+        )
+
+        # EXACT SAME OUTPUT PROCESSING AS COLAB
+        full_output = tokenizer.decode(output[0], skip_special_tokens=True)
+
+        # Split and return only the generated answer
+        if "MEDICAL ASSESSMENT:" in full_output:
+            answer = full_output.split("MEDICAL ASSESSMENT:")[-1].strip()
+        else:
+            answer = full_output
+
+        return answer
+
     except Exception as e:
-        return f"Document retrieval successful. Please review the {len(retrieved_docs)} relevant clinical documents above."
+        return f"Error in generation: {str(e)}"
 
 def main():
-    """Main Streamlit application"""
+    """Main Streamlit application - NOW WITH PROPER MODEL GENERATION"""
     
     # Header
     st.markdown('<div class="main-header">🏥 Clinical RAG System</div>', unsafe_allow_html=True)
@@ -294,7 +264,7 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
         top_k = st.slider("Number of documents to retrieve", 1, 10, 5)
-        max_tokens = st.slider("Maximum answer tokens", 100, 400, 200)
+        max_tokens = st.slider("Maximum answer tokens", 200, 800, 400)
         
         st.header("📊 System Status")
         
@@ -316,14 +286,6 @@ def main():
         for component, status in status_checks.items():
             icon = "✅" if status else "❌"
             st.write(f"{icon} {component}")
-        
-        # Generation mode selection
-        st.header("🔧 Generation Mode")
-        generation_mode = st.radio(
-            "Select generation approach:",
-            ["Safe Mode (Recommended)", "Alternative Mode", "Both"],
-            index=0
-        )
         
         st.header("💡 Sample Clinical Queries")
         sample_queries = [
@@ -361,8 +323,8 @@ def main():
     
     # Process query
     if search_button and query:
-        if not all([model, index, documents]):
-            st.error("❌ Essential components not loaded. Check system status in sidebar.")
+        if not all([model, index, documents, generator]):
+            st.error("❌ Not all models are loaded. Check system status in sidebar.")
             return
             
         with st.spinner("🔍 Retrieving clinical documents..."):
@@ -372,48 +334,26 @@ def main():
                 st.error("❌ No relevant documents found. Try rephrasing your query.")
                 return
             
-            # Store retrieval results
+            # Show retrieval results first
             st.session_state.retrieved_docs = retrieved_docs
             st.session_state.current_query = query
             
-            # Generate answers based on selected mode
-            with st.spinner("🤔 Generating clinical assessment..."):
-                if generation_mode in ["Safe Mode (Recommended)", "Both"] and generator:
-                    safe_answer = generate_answer(query, retrieved_docs, tokenizer, generator, max_tokens)
-                    st.session_state.safe_answer = safe_answer
-                
-                if generation_mode in ["Alternative Mode", "Both"]:
-                    alt_answer = alternative_generate_answer(query, retrieved_docs)
-                    st.session_state.alt_answer = alt_answer
+            # Then generate answer
+            with st.spinner("🤔 Generating clinical assessment (this may take 20-30 seconds)..."):
+                answer = generate_answer(query, retrieved_docs, tokenizer, generator, max_tokens)
+                st.session_state.generated_answer = answer
     
     # Display results
-    if hasattr(st.session_state, 'safe_answer') or hasattr(st.session_state, 'alt_answer'):
+    if hasattr(st.session_state, 'generated_answer'):
         st.markdown("---")
         st.markdown("### 💡 AI Clinical Assessment")
         
-        # Display Safe Mode answer
-        if hasattr(st.session_state, 'safe_answer'):
-            st.markdown("#### 🔒 Safe Mode Generation")
-            with st.container():
-                if "error" in st.session_state.safe_answer.lower():
-                    st.markdown('<div class="warning-box">', unsafe_allow_html=True)
-                    st.markdown("**Qwen Model Output:**")
-                    st.write(st.session_state.safe_answer)
-                    st.markdown('</div>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<div class="model-output">', unsafe_allow_html=True)
-                    st.markdown("**Qwen Model Assessment:**")
-                    st.write(st.session_state.safe_answer)
-                    st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Display Alternative Mode answer
-        if hasattr(st.session_state, 'alt_answer'):
-            st.markdown("#### 🔄 Alternative Generation")
-            with st.container():
-                st.markdown('<div class="clinical-answer">', unsafe_allow_html=True)
-                st.markdown("**Document-Based Analysis:**")
-                st.write(st.session_state.alt_answer)
-                st.markdown('</div>', unsafe_allow_html=True)
+        # Display the model-generated answer (SAME AS COLAB OUTPUT)
+        with st.container():
+            st.markdown('<div class="model-output">', unsafe_allow_html=True)
+            st.markdown("**Qwen Model Assessment:**")
+            st.write(st.session_state.generated_answer)
+            st.markdown('</div>', unsafe_allow_html=True)
         
         # Display retrieved documents
         st.markdown("---")
@@ -456,14 +396,13 @@ def main():
         st.metric("Total Documents", len(documents) if documents else 0)
     
     with col2:
-        if hasattr(st.session_state, 'safe_answer'):
-            status = "⚠️" if "error" in st.session_state.safe_answer.lower() else "✅"
-            st.metric("Generation Status", status)
-        else:
-            st.metric("Ready", "🔍")
+        st.metric("AI Model", "Qwen 2.5-1.5B")
     
     with col3:
-        st.metric("Retrieval Engine", "FAISS")
+        if hasattr(st.session_state, 'generated_answer'):
+            st.metric("Assessment Generated", "✅")
+        else:
+            st.metric("Ready", "🔍")
     
     st.markdown("""
     <div style='text-align: center; color: #666; margin-top: 2rem;'>
