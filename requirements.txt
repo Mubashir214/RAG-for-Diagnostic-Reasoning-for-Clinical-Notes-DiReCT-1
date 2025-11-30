@@ -1,7 +1,10 @@
-streamlit>=1.28.0
-faiss-cpu>=1.7.0
-sentence-transformers>=2.2.0
-transformers>=4.30.0
-torch>=2.0.0
-numpy>=1.21.0
-accelerate>=0.20.0
+streamlit==1.28.0
+faiss-cpu==1.7.4
+sentence-transformers==2.2.2
+transformers==4.37.0
+torch==2.1.0
+torchvision==0.16.0
+torchaudio==2.1.0
+numpy==1.24.3
+accelerate==0.24.1
+safetensors==0.4.1
