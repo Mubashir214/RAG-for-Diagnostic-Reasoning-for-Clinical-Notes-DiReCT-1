@@ -3,10 +3,4 @@ faiss-cpu==1.7.4
 sentence-transformers==2.2.2
 transformers==4.35.2
 torch==2.1.1
-torchvision==0.16.1
-torchaudio==2.1.1
 numpy==1.24.3
-accelerate==0.24.1
-safetensors==0.4.1
-tqdm==4.66.1
-requests==2.31.0
