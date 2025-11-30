@@ -1,30 +1,7 @@
-def generate_answer(query, retrieved_docs, tokenizer, generator, max_tokens=300):
-    """QUICK FIX for index out of range error"""
-    try:
-        # EXTREMELY conservative approach
-        context = ""
-        for i, doc in enumerate(retrieved_docs[:1]):  # ONLY USE TOP 1 DOCUMENT
-            doc_text = doc["text"][:300]  # ONLY 300 CHARACTERS
-            context += f"Doc {i+1}: {doc_text}\n"
-        
-        prompt = f"Context: {context}\nQuestion: {query}\nAnswer:"
-        
-        # Very safe tokenization
-        inputs = tokenizer(prompt, return_tensors="pt", max_length=512, truncation=True)
-        inputs = {k: v.to(generator.device) for k, v in inputs.items()}
-        
-        # Very safe generation
-        with torch.no_grad():
-            outputs = generator.generate(
-                **inputs,
-                max_new_tokens=200,  # Very short
-                temperature=0.3,
-                do_sample=False,  # Disable sampling for stability
-                pad_token_id=tokenizer.eos_token_id
-            )
-        
-        answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        return answer.split("Answer:")[-1].strip() if "Answer:" in answer else answer
-        
-    except Exception as e:
-        return f"Safe generation completed. Error details: {str(e)}"
+streamlit>=1.28.0
+faiss-cpu>=1.7.0
+sentence-transformers>=2.2.0
+transformers>=4.30.0
+torch>=2.0.0
+numpy>=1.21.0
+accelerate>=0.20.0
