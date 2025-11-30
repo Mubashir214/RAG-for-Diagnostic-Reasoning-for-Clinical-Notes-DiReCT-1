@@ -1,71 +1,51 @@
-# app.py - UPDATED with correct file names
+# app.py - REPLICATES YOUR EXACT TESTING OUTPUT FORMAT
 import streamlit as st
+import faiss
+import pickle
+import numpy as np
 import os
-import sys
-from typing import List, Dict, Any
+import re
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+from sentence_transformers import SentenceTransformer
 
-# Page configuration
+# Page configuration - SIMPLE AND CLEAN
 st.set_page_config(
-    page_title="Clinical RAG Assistant",
+    page_title="Clinical RAG System",
     page_icon="🏥",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# Custom CSS
+# Remove all custom CSS for clean terminal-like output
 st.markdown("""
 <style>
     .main-header {
-        font-size: 2.5rem;
+        font-size: 2rem;
         color: #1f77b4;
         text-align: center;
-        margin-bottom: 2rem;
+        margin-bottom: 1rem;
     }
-    .clinical-query {
-        background-color: #f0f8ff;
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 5px solid #1f77b4;
-        margin: 1rem 0;
-    }
-    .success-box {
-        background-color: #d4edda;
-        border: 1px solid #c3e6cb;
-        border-radius: 8px;
-        padding: 1rem;
-        margin: 1rem 0;
+    .block-container {
+        padding-top: 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
 @st.cache_resource
 def load_models():
-    """Load all models with your actual file names"""
+    """Load all models"""
     try:
-        # Check for your actual file names
-        required_files = {
-            'faiss.index': 'FAISS vector database',
-            'documents.pkl': 'Clinical documents data'
-        }
-        
-        # Verify files exist
-        for file, description in required_files.items():
-            if not os.path.exists(file):
-                st.error(f"❌ Missing file: {file} - {description}")
-                return None, None, None
-        
-        # Setup sentence_model folder structure
+        # Setup sentence_model folder
         if not os.path.exists('sentence_model'):
-            st.info("🔧 Setting up model folder structure...")
             os.makedirs('sentence_model', exist_ok=True)
             os.makedirs('sentence_model/1_Pooling', exist_ok=True)
             
-            # Move files to sentence_model folder
+            # Move files
             files_to_move = [
                 'config.json', 'model.safetensors', 'tokenizer_config.json',
                 'tokenizer.json', 'vocab.txt', 'special_tokens_map.json',
                 'sentence_bert_config.json', 'config_sentence_transformers.json',
-                'modules.json', 'README.md'
+                'modules.json'
             ]
             
             for file in files_to_move:
@@ -76,38 +56,36 @@ def load_models():
             if os.path.exists('1_Pooling/config.json'):
                 os.rename('1_Pooling/config.json', 'sentence_model/1_Pooling/config.json')
         
-        # Import required libraries
-        import faiss
-        import pickle
-        import numpy as np
-        from sentence_transformers import SentenceTransformer
-        
-        # Load models with YOUR file names
-        st.info("🔄 Loading sentence transformer model...")
+        # Load models
         embedding_model = SentenceTransformer('sentence_model')
+        faiss_index = faiss.read_index('faiss.index')
         
-        st.info("📊 Loading FAISS index...")
-        faiss_index = faiss.read_index('faiss.index')  # YOUR FILE NAME
-        
-        st.info("📚 Loading clinical documents...")
-        with open('documents.pkl', 'rb') as f:  # YOUR FILE NAME
+        with open('documents.pkl', 'rb') as f:
             documents_data = pickle.load(f)
         
-        return embedding_model, faiss_index, documents_data
+        # Load generator model
+        generator_model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+        tokenizer = AutoTokenizer.from_pretrained(generator_model_name, trust_remote_code=True)
+        
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            
+        generator = AutoModelForCausalLM.from_pretrained(
+            generator_model_name,
+            device_map="auto",
+            torch_dtype=torch.float16,
+            trust_remote_code=True
+        )
+        
+        return embedding_model, faiss_index, documents_data, tokenizer, generator
         
     except Exception as e:
-        st.error(f"❌ Error loading models: {str(e)}")
-        return None, None, None
+        st.error(f"Error loading models: {str(e)}")
+        return None, None, None, None, None
 
 def retrieve_documents(query, top_k=5):
-    """Enhanced retrieval function"""
-    if 'faiss_index' not in st.session_state:
-        return []
-    
-    # Encode query
+    """Retrieval function matching your testing script"""
     q = st.session_state.embedding_model.encode([query], convert_to_numpy=True)
-    
-    # Search in FAISS
     scores, idx = st.session_state.faiss_index.search(q, top_k * 2)
     
     out = []
@@ -117,218 +95,239 @@ def retrieve_documents(query, top_k=5):
         if i >= len(st.session_state.documents_data):
             continue
             
-        doc = st.session_state.documents_data[i]
-        source = doc.get("source", f"doc_{i}")
+        source = st.session_state.documents_data[i]["source"]
         
-        # Skip duplicates
         if source in seen_sources:
             continue
         seen_sources.add(source)
         
-        # Medical relevance boosting
-        adjusted_score = float(score)
-        query_lower = query.lower()
-        doc_text_lower = doc["text"].lower() if "text" in doc else ""
-        
-        # Boost for medical terms
-        medical_terms = ['stroke', 'ischemic', 'hemorrhagic', 'heart', 'cardiac', 'infection']
-        if any(term in query_lower for term in medical_terms):
-            if any(term in doc_text_lower for term in medical_terms):
-                adjusted_score += 0.1
-        
         out.append({
-            "score": adjusted_score,
+            "score": float(score),
             "source": source,
-            "text": doc["text"] if "text" in doc else "No text content",
-            "filename": os.path.basename(source) if "source" in doc else f"Document_{i}",
-            "original_score": float(score)
+            "text": st.session_state.documents_data[i]["text"]
         })
         
         if len(out) >= top_k:
             break
     
-    # Sort by score
-    out.sort(key=lambda x: x['score'], reverse=True)
     return out
 
-def analyze_clinical_context(query, retrieved_docs):
-    """Generate intelligent analysis based on retrieved documents"""
-    if not retrieved_docs:
-        return "No relevant clinical documents found for this query."
-    
-    # Analyze the retrieval results
-    total_docs = len(retrieved_docs)
-    avg_score = sum(doc['score'] for doc in retrieved_docs) / total_docs
-    high_quality_docs = sum(1 for doc in retrieved_docs if doc['score'] > 0.6)
-    
-    # Extract key themes
-    themes = set()
-    for doc in retrieved_docs[:3]:
-        text = doc['text'].lower()
-        if any(term in text for term in ['stroke', 'infarct', 'cerebral']):
-            themes.add("cerebrovascular")
-        if any(term in text for term in ['headache', 'migraine']):
-            themes.add("headache")
-        if any(term in text for term in ['chest', 'heart', 'cardiac']):
-            themes.add("cardiac")
-        if any(term in text for term in ['fever', 'infection', 'sepsis']):
-            themes.add("infectious")
-        if any(term in text for term in ['weakness', 'paralysis']):
-            themes.add("motor deficit")
-        if any(term in text for term in ['speech', 'aphasia']):
-            themes.add("speech disturbance")
-    
-    themes_str = ", ".join(themes) if themes else "various clinical"
-    
-    # Generate analysis
-    analysis = f"""
-## 🩺 Clinical Context Analysis
+def generate_answer(query, retrieved_docs, max_tokens=400):
+    """Generate answer in exact same format as your testing script"""
+    context = "\n\n".join(d["text"][:1000] for d in retrieved_docs)
 
-**Query:** {query}
+    prompt = f"""
+You are a helpful and medically accurate Clinical RAG system.
 
-**Database Search Results:**
-- **Documents Found:** {total_docs} relevant clinical cases
-- **Retrieval Quality:** {'Excellent' if avg_score > 0.7 else 'Good' if avg_score > 0.5 else 'Moderate'} (average relevance: {avg_score:.3f})
-- **High-Quality Matches:** {high_quality_docs} documents with strong relevance
+Context from relevant clinical notes:
+{context}
 
-**Clinical Themes Identified:**
-The retrieved documents primarily discuss **{themes_str}** conditions.
+Question:
+{query}
 
-**Key Insights:**
-Based on the clinical documentation, several similar cases provide context for your query. Review the specific documents below for detailed clinical information.
-
----
-
-**Note:** Always consult healthcare professionals for definitive diagnosis and treatment decisions.
+Provide a concise clinical reasoning answer.
 """
+
+    inputs = st.session_state.tokenizer(prompt, return_tensors="pt").to(st.session_state.generator.device)
+    output = st.session_state.generator.generate(
+        **inputs,
+        max_new_tokens=max_tokens,
+        temperature=0.3,
+        do_sample=True
+    )
+
+    return st.session_state.tokenizer.decode(output[0], skip_special_tokens=True)
+
+def display_results_exact_format(results, query_number, query_type):
+    """Display results in EXACT same format as your testing script"""
     
-    return analysis
+    # Header matching your testing format
+    st.markdown(f"**🎯 TEST {query_number}/10: {query_type}**")
+    st.markdown("\n" + "=" * 80)
+    st.markdown(f"🧠 STROKE DOMAIN - EXAMPLE {query_number}: {query_type}")
+    st.markdown("=" * 80)
+    
+    # Query section
+    st.markdown(f"**📋 CLINICAL QUERY:**")
+    st.markdown(f"   {results['query']}")
+    
+    # Answer section - EXACT same format
+    st.markdown(f"\n**💡 CLINICAL ASSESSMENT:**")
+    st.markdown("-" * 60)
+    st.text(results["answer"])
+    st.markdown("-" * 60)
+    
+    # Retrieved documents - EXACT same format
+    st.markdown(f"\n**📚 RETRIEVED CLINICAL DOCUMENTS ({len(results['retrieved'])}):**")
+    st.markdown("=" * 60)
+    
+    for i, doc in enumerate(results['retrieved']):
+        st.markdown(f"\n**📑 DOCUMENT {i+1}:**")
+        st.markdown(f"   **⭐ Relevance Score:** {doc['score']:.3f}")
+        st.markdown(f"   **📁 Source:** {os.path.basename(doc['source'])}")
+        
+        # Extract category from path
+        path_parts = doc['source'].split('/')
+        category = "Unknown"
+        for part in path_parts:
+            if part in ['Stroke', 'Ischemic Stroke', 'Hemorrhagic Stroke', 'Multiple Sclerosis', 'Gastritis', 'Migraine']:
+                category = part
+                break
+        
+        st.markdown(f"   **🏥 Category:** {category}")
+        
+        # Clinical findings preview
+        doc_text = doc['text'].strip()
+        preview = doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
+        st.markdown(f"   **📝 Clinical Findings:** {preview}")
+        st.markdown("-" * 60)
 
 def main():
-    st.markdown('<h1 class="main-header">🏥 Clinical RAG Assistant</h1>', unsafe_allow_html=True)
+    # Simple header matching your testing format
+    st.markdown("🚀" * 20)
+    st.markdown("🧠 CLINICAL RAG SYSTEM")
+    st.markdown("🚀" * 20)
     
-    # Initialize session state
+    # Initialize models
     if 'models_loaded' not in st.session_state:
-        with st.spinner("🔄 Initializing Clinical RAG System..."):
-            embedding_model, faiss_index, documents_data = load_models()
+        with st.spinner("Loading clinical models..."):
+            embedding_model, faiss_index, documents_data, tokenizer, generator = load_models()
             
-            if embedding_model and faiss_index and documents_data:
+            if all([embedding_model, faiss_index, documents_data, tokenizer, generator]):
                 st.session_state.embedding_model = embedding_model
                 st.session_state.faiss_index = faiss_index
                 st.session_state.documents_data = documents_data
+                st.session_state.tokenizer = tokenizer
+                st.session_state.generator = generator
                 st.session_state.models_loaded = True
-                
-                st.markdown(f'<div class="success-box">✅ <strong>System Ready!</strong> Loaded {len(documents_data)} clinical documents successfully.</div>', unsafe_allow_html=True)
+                st.success(f"✅ Loaded {len(documents_data)} clinical documents!")
             else:
-                st.error("❌ System initialization failed. Please check that all required files are uploaded.")
-                st.info("""
-                **Required Files:**
-                - `faiss.index` - FAISS vector database
-                - `documents.pkl` - Clinical documents
-                - All sentence_model files (config.json, model.safetensors, etc.)
-                """)
+                st.error("❌ Failed to load models")
                 return
     
-    # Sidebar
-    with st.sidebar:
-        st.header("⚙️ Configuration")
-        top_k = st.slider("Documents to retrieve", 1, 10, 5)
-        
-        st.header("🚀 Quick Queries")
-        quick_queries = [
-            "Patient with sudden weakness on one side and facial droop",
-            "Patient with severe headache, nausea and vomiting",
-            "Patient with chest pain radiating to left arm",
-            "Patient with fever and low blood pressure",
-            "Patient with speech difficulties and arm weakness"
-        ]
-        
-        for i, query in enumerate(quick_queries):
-            if st.button(f"{query[:40]}...", key=f"quick_{i}"):
-                st.session_state.current_query = query
-                if 'last_results' in st.session_state:
-                    del st.session_state.last_results
-                st.rerun()
+    # Test queries matching your exact testing cases
+    st.markdown("### 🧪 CLINICAL TEST QUERIES")
     
-    # Main query interface
-    st.markdown("### 🔍 Enter Clinical Query")
+    test_cases = [
+        {
+            "number": 6,
+            "type": "ISCHEMIC STROKE IDENTIFICATION", 
+            "query": "Patient with sudden weakness on one side, facial droop, and slurred speech — likely type of stroke?"
+        },
+        {
+            "number": 7,
+            "type": "HEMORRHAGIC STROKE IDENTIFICATION",
+            "query": "Patient with sudden severe headache, nausea, and vomiting — possible hemorrhagic event?"
+        },
+        {
+            "number": 8, 
+            "type": "TRANSIENT ISCHEMIC ATTACK (TIA)",
+            "query": "Patient reports brief episode of vision loss and numbness in the arm, symptoms resolve within minutes — likely diagnosis?"
+        },
+        {
+            "number": 9,
+            "type": "STROKE WITH APHASIA", 
+            "query": "Patient with sudden difficulty speaking and understanding language, right-sided weakness — what type of stroke?"
+        },
+        {
+            "number": 10,
+            "type": "STROKE WITH VISUAL FIELD DEFICIT",
+            "query": "Patient complains of sudden loss of vision in left visual field, left-sided weakness — likely neurological condition?"
+        }
+    ]
     
-    query = st.text_area(
-        "Describe the clinical scenario:",
-        value=st.session_state.get('current_query', ''),
-        height=100,
-        placeholder="Example: 65-year-old with acute right-sided weakness and slurred speech"
-    )
-    
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        if st.button("🚀 Search Clinical Database", type="primary", use_container_width=True):
-            if query.strip():
+    # Display test cases as buttons
+    for test_case in test_cases:
+        if st.button(f"TEST {test_case['number']}: {test_case['type']}", key=f"test_{test_case['number']}"):
+            with st.spinner(f"Processing {test_case['type']}..."):
                 # Retrieve documents
-                with st.spinner("🔍 Searching clinical database..."):
-                    retrieved_docs = retrieve_documents(query, top_k=top_k)
+                retrieved_docs = retrieve_documents(test_case['query'], top_k=5)
                 
-                # Generate analysis
-                with st.spinner("📊 Analyzing clinical context..."):
-                    analysis = analyze_clinical_context(query, retrieved_docs)
+                # Generate answer
+                answer = generate_answer(test_case['query'], retrieved_docs)
                 
                 # Store results
-                st.session_state.last_results = {
-                    'query': query,
-                    'retrieved_docs': retrieved_docs,
-                    'analysis': analysis
+                results = {
+                    'query': test_case['query'],
+                    'retrieved': retrieved_docs,
+                    'answer': answer
                 }
                 
-                st.rerun()
-            else:
-                st.warning("⚠️ Please enter a clinical query.")
+                # Display in exact same format
+                display_results_exact_format(results, test_case['number'], test_case['type'])
     
-    with col2:
-        if st.button("🔄 Clear Results", use_container_width=True):
-            if 'last_results' in st.session_state:
-                del st.session_state.last_results
-            st.session_state.current_query = ""
-            st.rerun()
+    # Custom query section
+    st.markdown("### 🔍 CUSTOM CLINICAL QUERY")
     
-    # Display results
-    if 'last_results' in st.session_state:
-        results = st.session_state.last_results
-        
-        st.markdown("---")
-        st.markdown(results['analysis'])
-        
-        # Display retrieved documents
-        st.markdown("### 📚 Retrieved Clinical Documents")
-        st.info(f"Found {len(results['retrieved_docs'])} relevant documents:")
-        
-        for i, doc in enumerate(results['retrieved_docs']):
-            # Determine quality indicator
-            quality_color = "🟢" if doc['score'] > 0.7 else "🟡" if doc['score'] > 0.5 else "🟠"
-            
-            with st.expander(f"{quality_color} Document {i+1} | Relevance: {doc['score']:.3f} | {doc.get('filename', 'Clinical Case')}", expanded=i < 2):
-                st.write("**Clinical Content:**")
-                st.write(doc['text'][:1000] + "..." if len(doc['text']) > 1000 else doc['text'])
-                
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.metric("Relevance Score", f"{doc['score']:.3f}")
-                with col_b:
-                    st.metric("Document", f"{i+1}/{len(results['retrieved_docs'])}")
-        
-        if not results['retrieved_docs']:
-            st.warning("No documents met the relevance threshold. Try rephrasing your query.")
-    
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        """
-        <div style='text-align: center; color: gray;'>
-        <i>Clinical RAG Assistant v1.0 • For educational and research purposes • Always consult healthcare professionals for medical decisions</i>
-        </div>
-        """,
-        unsafe_allow_html=True
+    custom_query = st.text_area(
+        "Enter your own clinical query:",
+        height=100,
+        placeholder="e.g., Patient with chest pain radiating to left arm and diaphoresis — likely diagnosis?"
     )
+    
+    if st.button("🚀 PROCESS CUSTOM QUERY", type="primary"):
+        if custom_query.strip():
+            with st.spinner("Processing custom query..."):
+                # Retrieve documents
+                retrieved_docs = retrieve_documents(custom_query, top_k=5)
+                
+                # Generate answer
+                answer = generate_answer(custom_query, retrieved_docs)
+                
+                # Store results
+                results = {
+                    'query': custom_query,
+                    'retrieved': retrieved_docs,
+                    'answer': answer
+                }
+                
+                # Display in exact same format
+                st.markdown("\n" + "=" * 80)
+                st.markdown("🧠 CUSTOM CLINICAL QUERY RESULTS")
+                st.markdown("=" * 80)
+                
+                st.markdown(f"**📋 CLINICAL QUERY:**")
+                st.markdown(f"   {results['query']}")
+                
+                st.markdown(f"\n**💡 CLINICAL ASSESSMENT:**")
+                st.markdown("-" * 60)
+                st.text(results["answer"])
+                st.markdown("-" * 60)
+                
+                st.markdown(f"\n**📚 RETRIEVED CLINICAL DOCUMENTS ({len(results['retrieved'])}):**")
+                st.markdown("=" * 60)
+                
+                for i, doc in enumerate(results['retrieved']):
+                    st.markdown(f"\n**📑 DOCUMENT {i+1}:**")
+                    st.markdown(f"   **⭐ Relevance Score:** {doc['score']:.3f}")
+                    st.markdown(f"   **📁 Source:** {os.path.basename(doc['source'])}")
+                    
+                    # Extract category
+                    path_parts = doc['source'].split('/')
+                    category = "Unknown"
+                    for part in path_parts:
+                        if part in ['Stroke', 'Ischemic Stroke', 'Hemorrhagic Stroke', 'Multiple Sclerosis', 'Gastritis', 'Migraine']:
+                            category = part
+                            break
+                    
+                    st.markdown(f"   **🏥 Category:** {category}")
+                    
+                    doc_text = doc['text'].strip()
+                    preview = doc_text[:500] + "..." if len(doc_text) > 500 else doc_text
+                    st.markdown(f"   **📝 Clinical Findings:** {preview}")
+                    st.markdown("-" * 60)
+        else:
+            st.warning("Please enter a clinical query.")
+    
+    # Performance summary (matching your testing output)
+    if 'test_results' in st.session_state:
+        st.markdown("\n" + "=" * 80)
+        st.markdown("📊 PERFORMANCE SUMMARY")
+        st.markdown("=" * 80)
+        
+        st.markdown("**✅ System Status:** OPERATIONAL")
+        st.markdown(f"**📚 Documents Loaded:** {len(st.session_state.documents_data)}")
+        st.markdown("**🎯 Ready for Clinical Queries**")
 
 if __name__ == "__main__":
     main()
