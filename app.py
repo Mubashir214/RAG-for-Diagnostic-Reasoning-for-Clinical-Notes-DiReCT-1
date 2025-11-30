@@ -1,8 +1,5 @@
-# app.py - WORKING VERSION with your file structure
+# app.py - UPDATED with correct file names
 import streamlit as st
-import faiss
-import pickle
-import numpy as np
 import os
 import sys
 from typing import List, Dict, Any
@@ -31,13 +28,6 @@ st.markdown("""
         border-left: 5px solid #1f77b4;
         margin: 1rem 0;
     }
-    .document-card {
-        background-color: #f8f9fa;
-        padding: 1rem;
-        border-radius: 8px;
-        border-left: 4px solid #28a745;
-        margin: 0.5rem 0;
-    }
     .success-box {
         background-color: #d4edda;
         border: 1px solid #c3e6cb;
@@ -50,14 +40,25 @@ st.markdown("""
 
 @st.cache_resource
 def load_models():
-    """Load all models with proper error handling"""
+    """Load all models with your actual file names"""
     try:
-        # Check if sentence_model folder exists, if not create it
+        # Check for your actual file names
+        required_files = {
+            'faiss.index': 'FAISS vector database',
+            'documents.pkl': 'Clinical documents data'
+        }
+        
+        # Verify files exist
+        for file, description in required_files.items():
+            if not os.path.exists(file):
+                st.error(f"❌ Missing file: {file} - {description}")
+                return None, None, None
+        
+        # Setup sentence_model folder structure
         if not os.path.exists('sentence_model'):
             st.info("🔧 Setting up model folder structure...")
             os.makedirs('sentence_model', exist_ok=True)
             os.makedirs('sentence_model/1_Pooling', exist_ok=True)
-            os.makedirs('sentence_model/2_Normalize', exist_ok=True)
             
             # Move files to sentence_model folder
             files_to_move = [
@@ -71,36 +72,35 @@ def load_models():
                 if os.path.exists(file):
                     os.rename(file, f'sentence_model/{file}')
             
-            # Move pooling config
+            # Handle pooling config
             if os.path.exists('1_Pooling/config.json'):
                 os.rename('1_Pooling/config.json', 'sentence_model/1_Pooling/config.json')
         
-        # Now import and load the model
+        # Import required libraries
+        import faiss
+        import pickle
+        import numpy as np
         from sentence_transformers import SentenceTransformer
+        
+        # Load models with YOUR file names
         st.info("🔄 Loading sentence transformer model...")
         embedding_model = SentenceTransformer('sentence_model')
         
-        # Load FAISS index
         st.info("📊 Loading FAISS index...")
-        faiss_index = faiss.read_index('clinical_faiss_index.index')
+        faiss_index = faiss.read_index('faiss.index')  # YOUR FILE NAME
         
-        # Load documents
         st.info("📚 Loading clinical documents...")
-        with open('clinical_documents.pkl', 'rb') as f:
+        with open('documents.pkl', 'rb') as f:  # YOUR FILE NAME
             documents_data = pickle.load(f)
         
         return embedding_model, faiss_index, documents_data
         
     except Exception as e:
         st.error(f"❌ Error loading models: {str(e)}")
-        st.info("💡 Please make sure all required files are uploaded:")
-        st.info("   - clinical_faiss_index.index")
-        st.info("   - clinical_documents.pkl") 
-        st.info("   - All sentence_model files (config.json, model.safetensors, etc.)")
         return None, None, None
 
 def retrieve_documents(query, top_k=5):
-    """Enhanced retrieval with medical focus"""
+    """Enhanced retrieval function"""
     if 'faiss_index' not in st.session_state:
         return []
     
@@ -108,13 +108,13 @@ def retrieve_documents(query, top_k=5):
     q = st.session_state.embedding_model.encode([query], convert_to_numpy=True)
     
     # Search in FAISS
-    scores, idx = st.session_state.faiss_index.search(q, top_k * 2)  # Get extra for filtering
+    scores, idx = st.session_state.faiss_index.search(q, top_k * 2)
     
     out = []
     seen_sources = set()
     
     for score, i in zip(scores[0], idx[0]):
-        if i >= len(st.session_state.documents_data):  # Safety check
+        if i >= len(st.session_state.documents_data):
             continue
             
         doc = st.session_state.documents_data[i]
@@ -130,10 +130,10 @@ def retrieve_documents(query, top_k=5):
         query_lower = query.lower()
         doc_text_lower = doc["text"].lower() if "text" in doc else ""
         
-        # Boost for stroke-related queries
-        stroke_terms = ['stroke', 'ischemic', 'hemorrhagic', 'tia', 'neurological', 'brain']
-        if any(term in query_lower for term in stroke_terms):
-            if any(term in doc_text_lower for term in stroke_terms):
+        # Boost for medical terms
+        medical_terms = ['stroke', 'ischemic', 'hemorrhagic', 'heart', 'cardiac', 'infection']
+        if any(term in query_lower for term in medical_terms):
+            if any(term in doc_text_lower for term in medical_terms):
                 adjusted_score += 0.1
         
         out.append({
@@ -161,22 +161,24 @@ def analyze_clinical_context(query, retrieved_docs):
     avg_score = sum(doc['score'] for doc in retrieved_docs) / total_docs
     high_quality_docs = sum(1 for doc in retrieved_docs if doc['score'] > 0.6)
     
-    # Extract key information from documents
-    document_themes = []
-    for doc in retrieved_docs[:3]:  # Analyze top 3 documents
+    # Extract key themes
+    themes = set()
+    for doc in retrieved_docs[:3]:
         text = doc['text'].lower()
         if any(term in text for term in ['stroke', 'infarct', 'cerebral']):
-            document_themes.append("cerebrovascular")
-        elif any(term in text for term in ['headache', 'migraine', 'pain']):
-            document_themes.append("headache")
-        elif any(term in text for term in ['weakness', 'paralysis', 'hemiparesis']):
-            document_themes.append("motor_deficit")
-        elif any(term in text for term in ['speech', 'aphasia', 'dysarthria']):
-            document_themes.append("speech_disturbance")
+            themes.add("cerebrovascular")
+        if any(term in text for term in ['headache', 'migraine']):
+            themes.add("headache")
+        if any(term in text for term in ['chest', 'heart', 'cardiac']):
+            themes.add("cardiac")
+        if any(term in text for term in ['fever', 'infection', 'sepsis']):
+            themes.add("infectious")
+        if any(term in text for term in ['weakness', 'paralysis']):
+            themes.add("motor deficit")
+        if any(term in text for term in ['speech', 'aphasia']):
+            themes.add("speech disturbance")
     
-    # Remove duplicates and create themes string
-    unique_themes = list(set(document_themes))
-    themes_str = ", ".join(unique_themes) if unique_themes else "various neurological"
+    themes_str = ", ".join(themes) if themes else "various clinical"
     
     # Generate analysis
     analysis = f"""
@@ -190,14 +192,14 @@ def analyze_clinical_context(query, retrieved_docs):
 - **High-Quality Matches:** {high_quality_docs} documents with strong relevance
 
 **Clinical Themes Identified:**
-The retrieved documents primarily discuss **{themes_str}** conditions, suggesting these may be relevant to your query.
+The retrieved documents primarily discuss **{themes_str}** conditions.
 
-**Key Findings Summary:**
-Based on the clinical documentation, the presentation appears consistent with several documented cases in the database. The retrieved documents provide valuable comparative information for clinical decision-making.
+**Key Insights:**
+Based on the clinical documentation, several similar cases provide context for your query. Review the specific documents below for detailed clinical information.
 
 ---
 
-**Note:** This analysis is based on pattern matching within the clinical database. Please review the specific documents below and consult with healthcare professionals for definitive diagnosis.
+**Note:** Always consult healthcare professionals for definitive diagnosis and treatment decisions.
 """
     
     return analysis
@@ -216,9 +218,15 @@ def main():
                 st.session_state.documents_data = documents_data
                 st.session_state.models_loaded = True
                 
-                st.markdown('<div class="success-box">✅ <strong>System Ready!</strong> Loaded {} clinical documents and models successfully.</div>'.format(len(documents_data)), unsafe_allow_html=True)
+                st.markdown(f'<div class="success-box">✅ <strong>System Ready!</strong> Loaded {len(documents_data)} clinical documents successfully.</div>', unsafe_allow_html=True)
             else:
-                st.error("❌ System initialization failed. Please check the error messages above.")
+                st.error("❌ System initialization failed. Please check that all required files are uploaded.")
+                st.info("""
+                **Required Files:**
+                - `faiss.index` - FAISS vector database
+                - `documents.pkl` - Clinical documents
+                - All sentence_model files (config.json, model.safetensors, etc.)
+                """)
                 return
     
     # Sidebar
@@ -231,12 +239,12 @@ def main():
             "Patient with sudden weakness on one side and facial droop",
             "Patient with severe headache, nausea and vomiting",
             "Patient with chest pain radiating to left arm",
-            "Patient with fever and hypotension",
-            "Patient with speech difficulties and right arm weakness"
+            "Patient with fever and low blood pressure",
+            "Patient with speech difficulties and arm weakness"
         ]
         
         for i, query in enumerate(quick_queries):
-            if st.button(f"{query[:50]}...", key=f"quick_{i}"):
+            if st.button(f"{query[:40]}...", key=f"quick_{i}"):
                 st.session_state.current_query = query
                 if 'last_results' in st.session_state:
                     del st.session_state.last_results
@@ -248,8 +256,8 @@ def main():
     query = st.text_area(
         "Describe the clinical scenario:",
         value=st.session_state.get('current_query', ''),
-        height=120,
-        placeholder="Example: 65-year-old male with acute onset right-sided weakness, facial droop, and slurred speech. History of hypertension and diabetes."
+        height=100,
+        placeholder="Example: 65-year-old with acute right-sided weakness and slurred speech"
     )
     
     col1, col2 = st.columns([1, 1])
@@ -300,7 +308,7 @@ def main():
             
             with st.expander(f"{quality_color} Document {i+1} | Relevance: {doc['score']:.3f} | {doc.get('filename', 'Clinical Case')}", expanded=i < 2):
                 st.write("**Clinical Content:**")
-                st.write(doc['text'][:800] + "..." if len(doc['text']) > 800 else doc['text'])
+                st.write(doc['text'][:1000] + "..." if len(doc['text']) > 1000 else doc['text'])
                 
                 col_a, col_b = st.columns(2)
                 with col_a:
