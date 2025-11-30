@@ -61,38 +61,108 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 @st.cache_resource
-def load_models():
-    """Load all required models and data"""
+def load_sentence_transformer():
+    """Load sentence transformer from local files"""
     try:
-        # Load sentence transformer model
-        st.info("🔄 Loading Sentence Transformer model...")
-        model = SentenceTransformer('sentence_transformer_model')
+        # Check if we have the required files for sentence transformer
+        required_files = [
+            'config_sentence_transformers.json',
+            'sentence_bert_config.json', 
+            'model.safetensors',
+            'modules.json',
+            'tokenizer.json',
+            'vocab.txt'
+        ]
         
-        # Load FAISS index
-        st.info("🔄 Loading FAISS index...")
-        index = faiss.read_index("faiss.index")
+        missing_files = [f for f in required_files if not os.path.exists(f)]
+        if missing_files:
+            st.warning(f"Missing files for sentence transformer: {missing_files}")
         
-        # Load documents metadata
-        st.info("🔄 Loading documents metadata...")
-        with open("documents.pkl", "rb") as f:
-            documents = pickle.load(f)
+        # Try to load the model from current directory files
+        st.info("🔄 Loading Sentence Transformer from local files...")
+        model = SentenceTransformer('.')
+        st.success("✅ Sentence Transformer loaded successfully!")
+        return model
+    except Exception as e:
+        st.error(f"❌ Error loading Sentence Transformer: {e}")
+        # Fallback to a smaller online model
+        try:
+            st.info("🔄 Trying fallback model (all-MiniLM-L6-v2)...")
+            model = SentenceTransformer('all-MiniLM-L6-v2')
+            st.success("✅ Fallback model loaded successfully!")
+            return model
+        except Exception as fallback_error:
+            st.error(f"❌ Fallback also failed: {fallback_error}")
+            return None
+
+@st.cache_resource
+def load_faiss_index():
+    """Load FAISS index"""
+    try:
+        if os.path.exists("faiss.index"):
+            st.info("🔄 Loading FAISS index...")
+            index = faiss.read_index("faiss.index")
+            st.success("✅ FAISS index loaded successfully!")
+            return index
+        else:
+            st.error("❌ FAISS index file not found!")
+            return None
+    except Exception as e:
+        st.error(f"❌ Error loading FAISS index: {e}")
+        return None
+
+@st.cache_resource
+def load_documents():
+    """Load documents metadata"""
+    try:
+        if os.path.exists("documents.pkl"):
+            st.info("🔄 Loading documents metadata...")
+            with open("documents.pkl", "rb") as f:
+                documents = pickle.load(f)
+            st.success(f"✅ Loaded {len(documents)} documents!")
+            return documents
+        else:
+            st.error("❌ Documents file not found!")
+            return None
+    except Exception as e:
+        st.error(f"❌ Error loading documents: {e}")
+        return None
+
+@st.cache_resource
+def load_generator_model():
+    """Load the Qwen generator model"""
+    try:
+        # Check for required model files
+        required_files = [
+            'config.json', 'model.safetensors', 'tokenizer.json',
+            'tokenizer_config.json', 'vocab.txt', 'special_tokens_map.json'
+        ]
         
-        # Load generator model
+        missing_files = [f for f in required_files if not os.path.exists(f)]
+        if missing_files:
+            st.warning(f"Missing generator model files: {missing_files}")
+        
         st.info("🔄 Loading Qwen language model...")
-        tokenizer = AutoTokenizer.from_pretrained(".")
+        tokenizer = AutoTokenizer.from_pretrained(
+            ".", 
+            trust_remote_code=True,
+            local_files_only=True
+        )
+        
         generator = AutoModelForCausalLM.from_pretrained(
             ".",
             device_map="auto",
             torch_dtype=torch.float16,
-            trust_remote_code=True
+            trust_remote_code=True,
+            local_files_only=True
         )
         
-        st.success("✅ All models loaded successfully!")
-        return model, index, documents, tokenizer, generator
+        st.success("✅ Generator model loaded successfully!")
+        return tokenizer, generator
         
     except Exception as e:
-        st.error(f"❌ Error loading models: {e}")
-        return None, None, None, None, None
+        st.error(f"❌ Error loading generator model: {e}")
+        return None, None
 
 def retrieve_documents(query, model, index, documents, top_k=5):
     """Retrieve relevant documents for a query"""
@@ -199,6 +269,20 @@ def main():
         top_k = st.slider("Number of documents to retrieve", 1, 10, 5)
         max_tokens = st.slider("Maximum answer length", 100, 800, 400)
         
+        st.header("📊 System Status")
+        
+        # Check file existence
+        files_status = {
+            "FAISS Index": os.path.exists("faiss.index"),
+            "Documents": os.path.exists("documents.pkl"),
+            "Sentence Transformer": all(os.path.exists(f) for f in ['config_sentence_transformers.json', 'model.safetensors']),
+            "Generator Model": all(os.path.exists(f) for f in ['config.json', 'model.safetensors', 'tokenizer.json'])
+        }
+        
+        for file, exists in files_status.items():
+            status = "✅" if exists else "❌"
+            st.write(f"{status} {file}")
+        
         st.header("💡 Sample Queries")
         sample_queries = [
             "What is the likely diagnosis for a patient with slurred speech and facial droop?",
@@ -209,19 +293,36 @@ def main():
         ]
         
         for query in sample_queries:
-            if st.button(f"🗨️ {query[:50]}..."):
+            if st.button(f"🗨️ {query[:50]}...", use_container_width=True):
                 st.session_state.query = query
     
     # Initialize session state
     if 'query' not in st.session_state:
         st.session_state.query = ""
     
-    # Load models
-    model, index, documents, tokenizer, generator = load_models()
+    # Load models with individual error handling
+    st.markdown("---")
+    st.markdown("### 🔧 System Initialization")
     
-    if model is None or index is None or documents is None:
-        st.error("Failed to load required models. Please check if all model files are available.")
+    with st.spinner("Loading models and data..."):
+        model = load_sentence_transformer()
+        index = load_faiss_index()
+        documents = load_documents()
+        tokenizer, generator = load_generator_model()
+    
+    # Check if all essential components are loaded
+    essential_loaded = model is not None and index is not None and documents is not None
+    if not essential_loaded:
+        st.error("""
+        ❌ Essential components failed to load. Please ensure you have:
+        - `faiss.index` - FAISS vector index
+        - `documents.pkl` - Documents metadata
+        - Sentence Transformer model files
+        """)
         return
+    
+    if tokenizer is None or generator is None:
+        st.warning("⚠️ Generator model not loaded. System will only perform document retrieval.")
     
     # Main query interface
     st.markdown("---")
@@ -243,8 +344,11 @@ def main():
             # Retrieve documents
             retrieved_docs = retrieve_documents(query, model, index, documents, top_k=top_k)
             
-            # Generate answer
-            answer = generate_answer(query, retrieved_docs, tokenizer, generator, max_tokens=max_tokens)
+            # Generate answer if generator is available
+            if tokenizer and generator:
+                answer = generate_answer(query, retrieved_docs, tokenizer, generator, max_tokens=max_tokens)
+            else:
+                answer = "⚠️ Generator model not available. Only document retrieval is functioning."
             
             # Store results in session state
             st.session_state.last_results = {
