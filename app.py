@@ -3,14 +3,12 @@ import faiss
 import pickle
 import numpy as np
 from sentence_transformers import SentenceTransformer
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
 import os
 import re
 
 # Page configuration
 st.set_page_config(
-    page_title="Clinical RAG System",
+    page_title="Clinical RAG System - Document Retrieval",
     page_icon="🏥",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -51,33 +49,43 @@ st.markdown("""
         color: #dc3545;
         font-weight: bold;
     }
-    .model-output {
-        background-color: #e8f5e8;
-        padding: 1.5rem;
-        border-radius: 10px;
-        border-left: 5px solid #28a745;
+    .success-box {
+        background-color: #d4edda;
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 4px solid #28a745;
         margin: 1rem 0;
-        white-space: pre-wrap;
     }
 </style>
 """, unsafe_allow_html=True)
 
 @st.cache_resource
 def load_sentence_transformer():
-    """Load sentence transformer from local files"""
+    """Load sentence transformer from local files with fallback"""
     try:
-        st.info("🔄 Loading Sentence Transformer...")
-        # Try local model first, then fallback
-        try:
+        # Check if local model exists and load it
+        if all(os.path.exists(f) for f in ['sentence_bert_config.json', 'config_sentence_transformers.json']):
+            st.info("🔄 Loading Sentence Transformer from local files...")
             model = SentenceTransformer('.', local_files_only=True)
-            st.success("✅ Local Sentence Transformer loaded!")
-        except:
+            st.success("✅ Local Sentence Transformer loaded successfully!")
+            return model
+        else:
+            # Fallback to lightweight model
+            st.info("🔄 Loading lightweight model (all-MiniLM-L6-v2)...")
             model = SentenceTransformer('all-MiniLM-L6-v2')
-            st.success("✅ Fallback Sentence Transformer loaded!")
-        return model
+            st.success("✅ Fallback model loaded successfully!")
+            return model
     except Exception as e:
         st.error(f"❌ Error loading Sentence Transformer: {e}")
-        return None
+        # Final fallback
+        try:
+            st.info("🔄 Trying universal sentence encoder...")
+            model = SentenceTransformer('all-MiniLM-L6-v2')
+            st.success("✅ Universal model loaded successfully!")
+            return model
+        except:
+            st.error("❌ All model loading attempts failed")
+            return None
 
 @st.cache_resource
 def load_faiss_index():
@@ -86,7 +94,7 @@ def load_faiss_index():
         if os.path.exists("faiss.index"):
             st.info("🔄 Loading FAISS index...")
             index = faiss.read_index("faiss.index")
-            st.success("✅ FAISS index loaded!")
+            st.success("✅ FAISS index loaded successfully!")
             return index
         else:
             st.error("❌ FAISS index file not found!")
@@ -103,7 +111,7 @@ def load_documents():
             st.info("🔄 Loading documents metadata...")
             with open("documents.pkl", "rb") as f:
                 documents = pickle.load(f)
-            st.success(f"✅ Loaded {len(documents)} documents!")
+            st.success(f"✅ Loaded {len(documents)} clinical documents!")
             return documents
         else:
             st.error("❌ Documents file not found!")
@@ -112,192 +120,153 @@ def load_documents():
         st.error(f"❌ Error loading documents: {e}")
         return None
 
-@st.cache_resource
-def load_qwen_model():
-    """Load Qwen model - USING THE SAME APPROACH AS YOUR COLAB NOTEBOOK"""
-    try:
-        st.info("🔄 Loading Qwen 2.5-1.5B Model...")
-        
-        # Use the exact same model name as your Colab notebook
-        gen_model_name = "Qwen/Qwen2.5-1.5B-Instruct"
-        
-        # Try to load from local files first, then from HuggingFace
-        try:
-            # First try local files
-            tokenizer = AutoTokenizer.from_pretrained(
-                ".",
-                trust_remote_code=True,
-                local_files_only=True
-            )
-            generator = AutoModelForCausalLM.from_pretrained(
-                ".",
-                device_map="auto",
-                torch_dtype=torch.float16,
-                trust_remote_code=True,
-                local_files_only=True
-            )
-            st.success("✅ Qwen model loaded from local files!")
-            
-        except Exception as local_error:
-            st.warning("⚠️ Local model not found, downloading from HuggingFace...")
-            # Fallback to online download (same as Colab)
-            tokenizer = AutoTokenizer.from_pretrained(
-                gen_model_name,
-                trust_remote_code=True
-            )
-            generator = AutoModelForCausalLM.from_pretrained(
-                gen_model_name,
-                device_map="auto",
-                torch_dtype=torch.float16,
-                trust_remote_code=True
-            )
-            st.success("✅ Qwen model downloaded and loaded!")
-        
-        return tokenizer, generator
-        
-    except Exception as e:
-        st.error(f"❌ Error loading Qwen model: {e}")
-        st.info("💡 Try running: `pip install transformers accelerate`")
-        return None, None
-
 def retrieve_documents(query, model, index, documents, top_k=5):
-    """Retrieve relevant documents - SAME AS YOUR COLAB NOTEBOOK"""
+    """Retrieve relevant documents for a query"""
     try:
         # Encode query
-        q = model.encode([query], convert_to_numpy=True)
+        query_embedding = model.encode([query], convert_to_numpy=True, show_progress_bar=False)
         
         # Search in FAISS index
-        scores, idx = index.search(q, top_k * 2)
+        scores, indices = index.search(query_embedding, top_k * 3)  # Get more to filter duplicates
         
-        # Remove duplicates (same logic as Colab)
-        out = []
+        # Remove duplicates and ensure valid indices
+        results = []
         seen_sources = set()
+        seen_texts = set()
         
-        for score, i in zip(scores[0], idx[0]):
-            if i < len(documents):
-                source = documents[i]["source"]
+        for score, idx in zip(scores[0], indices[0]):
+            if idx < len(documents) and idx >= 0:  # Safety check
+                doc = documents[idx]
+                source = doc.get("source", "")
+                text = doc.get("text", "").strip()
                 
-                # Skip duplicates
-                if source in seen_sources:
+                # Skip if text is too short or duplicate
+                if len(text) < 50 or text in seen_texts or source in seen_sources:
                     continue
+                    
                 seen_sources.add(source)
+                seen_texts.add(text[:500])  # Store text fingerprint
                 
-                out.append({
+                results.append({
                     "score": float(score),
                     "source": source,
-                    "text": documents[i]["text"],
-                    "filename": os.path.basename(source)
+                    "text": text,
+                    "filename": os.path.basename(source) if source else "Unknown",
+                    "preview": text[:300] + "..." if len(text) > 300 else text
                 })
                 
-                if len(out) >= top_k:
+                if len(results) >= top_k:
                     break
         
-        return out
+        return results
     except Exception as e:
         st.error(f"Error in retrieval: {e}")
         return []
 
-def generate_answer(query, retrieved_docs, tokenizer, generator, max_tokens=400):
-    """GENERATE ANSWER - USING THE EXACT SAME CODE FROM YOUR COLAB NOTEBOOK"""
-    try:
-        # EXACT SAME CONTEXT EXTRACTION AS COLAB
-        context_parts = []
-        for i, doc in enumerate(retrieved_docs[:3]):  # Limit to avoid duplicates
-            doc_text = doc["text"].strip()
-            # Take first 800 characters or until sentence end (SAME AS COLAB)
-            if len(doc_text) > 800:
-                trunc_point = doc_text[:800].rfind('.')
-                if trunc_point > 500:
-                    doc_text = doc_text[:trunc_point+1]
-                else:
-                    doc_text = doc_text[:800] + "..."
-            context_parts.append(f"Document {i+1}: {doc_text}")
+def generate_insightful_summary(query, retrieved_docs):
+    """Generate a smart summary based on retrieved documents without LLM"""
+    
+    if not retrieved_docs:
+        return "No relevant clinical documents found. Try rephrasing your query."
+    
+    # Extract key information patterns
+    all_text = " ".join([doc["text"] for doc in retrieved_docs])
+    
+    # Simple pattern matching for common clinical concepts
+    findings = []
+    
+    # Look for diagnosis patterns
+    diagnosis_patterns = [
+        r'diagnos[ie]s?:?\s*([^\.]+)',
+        r'findings?:?\s*([^\.]+)',
+        r'impression:?\s*([^\.]+)',
+        r'assessment:?\s*([^\.]+)'
+    ]
+    
+    for pattern in diagnosis_patterns:
+        matches = re.findall(pattern, all_text, re.IGNORECASE)
+        findings.extend(matches)
+    
+    # Look for symptom patterns
+    symptom_keywords = ['presented with', 'symptoms include', 'complains of', 'exhibiting']
+    for keyword in symptom_keywords:
+        if keyword in all_text.lower():
+            context = all_text.lower().split(keyword)[1][:200]
+            findings.append(f"Presenting: {context.strip()}")
+    
+    # Create summary
+    summary_parts = []
+    
+    summary_parts.append(f"**Query Analysis**: '{query}'")
+    summary_parts.append(f"**Documents Found**: {len(retrieved_docs)} relevant clinical documents")
+    
+    if findings:
+        summary_parts.append("**Key Clinical Information Found**:")
+        for i, finding in enumerate(set(findings[:5])):  # Remove duplicates, limit to 5
+            clean_finding = finding.strip()
+            if len(clean_finding) > 20:
+                summary_parts.append(f"  • {clean_finding}")
+    
+    # Add document insights
+    high_score_docs = [doc for doc in retrieved_docs if doc["score"] > 0.6]
+    if high_score_docs:
+        summary_parts.append(f"**High-Relevance Documents**: {len(high_score_docs)} documents with strong relevance")
+    
+    summary_parts.append("\n**Recommendation**: Review the retrieved clinical documents below for comprehensive details.")
+    
+    return "\n\n".join(summary_parts)
 
-        context = "\n\n".join(context_parts)
-
-        # EXACT SAME PROMPT TEMPLATE AS COLAB
-        prompt = f"""Based on the following clinical documentation, provide a concise medical assessment.
-
-CLINICAL DOCUMENTATION:
-{context}
-
-CLINICAL QUESTION: {query}
-
-MEDICAL ASSESSMENT:"""
-
-        # EXACT SAME GENERATION PARAMETERS AS COLAB
-        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048).to(generator.device)
-
-        # EXACT SAME GENERATION CALL AS COLAB
-        output = generator.generate(
-            **inputs,
-            max_new_tokens=max_tokens,
-            temperature=0.3,
-            do_sample=True,
-            pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-            repetition_penalty=1.2
-        )
-
-        # EXACT SAME OUTPUT PROCESSING AS COLAB
-        full_output = tokenizer.decode(output[0], skip_special_tokens=True)
-
-        # Split and return only the generated answer
-        if "MEDICAL ASSESSMENT:" in full_output:
-            answer = full_output.split("MEDICAL ASSESSMENT:")[-1].strip()
-        else:
-            answer = full_output
-
-        return answer
-
-    except Exception as e:
-        return f"Error in generation: {str(e)}"
+def extract_clinical_snippets(text, query_terms):
+    """Extract relevant snippets from clinical text"""
+    sentences = re.split(r'[.!?]', text)
+    relevant_sentences = []
+    
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if any(term.lower() in sentence.lower() for term in query_terms) and len(sentence) > 20:
+            relevant_sentences.append(sentence)
+    
+    return relevant_sentences[:3]  # Return top 3 relevant sentences
 
 def main():
-    """Main Streamlit application - NOW WITH PROPER MODEL GENERATION"""
+    """Main Streamlit application - Retrieval Focused"""
     
     # Header
-    st.markdown('<div class="main-header">🏥 Clinical RAG System</div>', unsafe_allow_html=True)
-    st.markdown("### AI-Powered Clinical Document Retrieval and Assessment Generation")
+    st.markdown('<div class="main-header">🏥 Clinical Document Retrieval System</div>', unsafe_allow_html=True)
+    st.markdown("### Intelligent Search for Clinical Documentation")
     
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
         top_k = st.slider("Number of documents to retrieve", 1, 10, 5)
-        max_tokens = st.slider("Maximum answer tokens", 200, 800, 400)
         
         st.header("📊 System Status")
         
-        # Load models
-        st.info("Loading models...")
-        model = load_sentence_transformer()
-        index = load_faiss_index()
-        documents = load_documents()
-        tokenizer, generator = load_qwen_model()
-        
-        # Status check
-        status_checks = {
-            "Embedding Model": model is not None,
-            "FAISS Index": index is not None,
-            "Documents": documents is not None,
-            "Qwen Model": generator is not None
+        # Check file existence
+        files_status = {
+            "FAISS Index": os.path.exists("faiss.index"),
+            "Documents Metadata": os.path.exists("documents.pkl"),
+            "Embedding Model": load_sentence_transformer() is not None
         }
         
-        for component, status in status_checks.items():
-            icon = "✅" if status else "❌"
-            st.write(f"{icon} {component}")
+        for file, exists in files_status.items():
+            status = "✅" if exists else "❌"
+            st.write(f"{status} {file}")
         
         st.header("💡 Sample Clinical Queries")
         sample_queries = [
-            "What is the likely diagnosis for a patient with slurred speech and facial droop?",
-            "What are the key clinical findings in this stroke case?",
-            "What diagnostic tests should be performed for suspected stroke?",
-            "Patient with sudden severe headache and vomiting — possible diagnosis?",
-            "Differentiate between ischemic and hemorrhagic stroke symptoms"
+            "stroke symptoms and diagnosis",
+            "patient with facial droop and slurred speech",
+            "hypertension treatment guidelines", 
+            "diabetes management complications",
+            "chest pain differential diagnosis",
+            "neurological examination findings",
+            "cardiac arrest protocols",
+            "pneumonia treatment antibiotics"
         ]
         
         for query in sample_queries:
-            if st.button(f"🧠 {query[:60]}...", use_container_width=True, key=f"sample_{hash(query)}"):
+            if st.button(f"🔍 {query}", use_container_width=True, key=f"btn_{query[:10]}"):
                 st.session_state.query = query
                 st.rerun()
     
@@ -305,108 +274,143 @@ def main():
     if 'query' not in st.session_state:
         st.session_state.query = ""
     
-    # Main interface
+    # Load essential components
     st.markdown("---")
-    st.markdown("### 🔍 Enter Clinical Query")
+    
+    model = load_sentence_transformer()
+    index = load_faiss_index()
+    documents = load_documents()
+    
+    # Check if all essential components are loaded
+    if model is None or index is None or documents is None:
+        st.error("""
+        ❌ System initialization failed. Required components:
+        - FAISS index (faiss.index)
+        - Documents metadata (documents.pkl) 
+        - Sentence embedding model
+        """)
+        return
+    
+    st.markdown("### 🔍 Clinical Query Search")
     
     query = st.text_area(
-        "Describe the clinical scenario or ask a medical question:",
+        "Enter clinical question or search terms:",
         value=st.session_state.query,
-        height=100,
-        placeholder="e.g., Patient presents with sudden onset of right-sided weakness and aphasia...",
-        key="query_input"
+        height=80,
+        placeholder="e.g., stroke symptoms, diabetes management, chest pain evaluation..."
     )
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        search_button = st.button("🚀 Generate Clinical Assessment", use_container_width=True, type="primary")
+        search_button = st.button("🚀 Search Clinical Database", use_container_width=True, type="primary")
     
-    # Process query
     if search_button and query:
-        if not all([model, index, documents, generator]):
-            st.error("❌ Not all models are loaded. Check system status in sidebar.")
-            return
-            
-        with st.spinner("🔍 Retrieving clinical documents..."):
+        with st.spinner("🔍 Searching clinical documents..."):
+            # Retrieve documents
             retrieved_docs = retrieve_documents(query, model, index, documents, top_k=top_k)
             
-            if not retrieved_docs:
-                st.error("❌ No relevant documents found. Try rephrasing your query.")
-                return
+            # Generate intelligent summary
+            summary = generate_insightful_summary(query, retrieved_docs)
             
-            # Show retrieval results first
-            st.session_state.retrieved_docs = retrieved_docs
-            st.session_state.current_query = query
+            # Store results in session state
+            st.session_state.last_results = {
+                "query": query,
+                "retrieved_docs": retrieved_docs,
+                "summary": summary
+            }
             
-            # Then generate answer
-            with st.spinner("🤔 Generating clinical assessment (this may take 20-30 seconds)..."):
-                answer = generate_answer(query, retrieved_docs, tokenizer, generator, max_tokens)
-                st.session_state.generated_answer = answer
+            # Force rerun to display results
+            st.rerun()
     
-    # Display results
-    if hasattr(st.session_state, 'generated_answer'):
-        st.markdown("---")
-        st.markdown("### 💡 AI Clinical Assessment")
+    # Display results if available
+    if hasattr(st.session_state, 'last_results'):
+        results = st.session_state.last_results
         
-        # Display the model-generated answer (SAME AS COLAB OUTPUT)
+        st.markdown("---")
+        st.markdown("### 📋 Search Summary")
+        
+        # Display summary
         with st.container():
-            st.markdown('<div class="model-output">', unsafe_allow_html=True)
-            st.markdown("**Qwen Model Assessment:**")
-            st.write(st.session_state.generated_answer)
+            st.markdown('<div class="success-box">', unsafe_allow_html=True)
+            st.markdown(results["summary"])
             st.markdown('</div>', unsafe_allow_html=True)
         
         # Display retrieved documents
         st.markdown("---")
-        st.markdown(f"### 📚 Supporting Clinical Documents ({len(st.session_state.retrieved_docs)})")
+        st.markdown(f"### 📚 Clinical Documents ({len(results['retrieved_docs'])})")
         
-        for i, doc in enumerate(st.session_state.retrieved_docs):
-            with st.container():
-                st.markdown('<div class="document-box">', unsafe_allow_html=True)
-                
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.markdown(f"**Document {i+1}:** {doc['filename']}")
-                with col2:
-                    score = doc['score']
-                    if score > 0.6:
-                        st.markdown(f'<span class="score-high">Relevance: {score:.3f}</span>', unsafe_allow_html=True)
-                    elif score > 0.4:
-                        st.markdown(f'<span class="score-medium">Relevance: {score:.3f}</span>', unsafe_allow_html=True)
-                    else:
-                        st.markdown(f'<span class="score-low">Relevance: {score:.3f}</span>', unsafe_allow_html=True)
-                
-                # Document preview
-                with st.expander("View Clinical Content"):
-                    doc_text = doc['text'].strip()
-                    st.text_area(
-                        f"Content {i+1}",
-                        doc_text,
-                        height=200,
-                        key=f"doc_{i}",
-                        label_visibility="collapsed"
-                    )
-                
-                st.markdown('</div>', unsafe_allow_html=True)
+        if not results['retrieved_docs']:
+            st.info("""
+            **No relevant documents found.** Try:
+            - Using different keywords
+            - Making the query more specific
+            - Using clinical terminology
+            - Checking the sample queries in the sidebar
+            """)
+        else:
+            for i, doc in enumerate(results['retrieved_docs']):
+                with st.container():
+                    st.markdown('<div class="document-box">', unsafe_allow_html=True)
+                    
+                    # Header with score and filename
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.markdown(f"**📄 Document {i+1}: {doc['filename']}**")
+                    with col2:
+                        score = doc['score']
+                        if score > 0.7:
+                            st.markdown(f'<span class="score-high">Relevance: {score:.3f}</span>', unsafe_allow_html=True)
+                        elif score > 0.5:
+                            st.markdown(f'<span class="score-medium">Relevance: {score:.3f}</span>', unsafe_allow_html=True)
+                        else:
+                            st.markdown(f'<span class="score-low">Relevance: {score:.3f}</span>', unsafe_allow_html=True)
+                    
+                    # Quick preview
+                    st.markdown(f"**Preview:** {doc['preview']}")
+                    
+                    # Full document content in expander
+                    with st.expander("View Full Clinical Content", expanded=False):
+                        # Extract query-related snippets
+                        query_terms = results['query'].split()
+                        snippets = extract_clinical_snippets(doc['text'], query_terms)
+                        
+                        if snippets:
+                            st.markdown("**Relevant Excerpts:**")
+                            for snippet in snippets:
+                                st.markdown(f"• {snippet}")
+                            st.markdown("---")
+                        
+                        # Full text
+                        st.text_area(
+                            "Complete Document Text",
+                            doc['text'],
+                            height=300,
+                            key=f"full_doc_{i}",
+                            label_visibility="collapsed"
+                        )
+                    
+                    st.markdown('</div>', unsafe_allow_html=True)
     
-    # Footer with model info
+    # Quick stats in footer
     st.markdown("---")
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("Total Documents", len(documents) if documents else 0)
+        st.metric("Total Documents", len(documents))
     
     with col2:
-        st.metric("AI Model", "Qwen 2.5-1.5B")
+        if hasattr(st.session_state, 'last_results'):
+            st.metric("Last Search Results", len(st.session_state.last_results['retrieved_docs']))
+        else:
+            st.metric("Ready for Queries", "✓")
     
     with col3:
-        if hasattr(st.session_state, 'generated_answer'):
-            st.metric("Assessment Generated", "✅")
-        else:
-            st.metric("Ready", "🔍")
+        st.metric("System Status", "Operational")
     
+    # Footer
     st.markdown("""
     <div style='text-align: center; color: #666; margin-top: 2rem;'>
-        <p>🏥 Clinical RAG System | FAISS + Sentence Transformers + Qwen 2.5-1.5B</p>
+        <p>🏥 Clinical Document Retrieval System | Powered by FAISS + Sentence Transformers</p>
         <p>⚠️ For educational and research purposes only. Not for clinical decision making.</p>
     </div>
     """, unsafe_allow_html=True)
