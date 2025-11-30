@@ -1,4 +1,8 @@
-streamlit==1.28.2
-faiss-cpu==1.7.4
-sentence-transformers==2.2.2
-numpy==1.24.3
+# Delete existing requirements.txt
+rm requirements.txt
+
+# Create new one with exact content
+echo "streamlit==1.28.2" > requirements.txt
+echo "faiss-cpu==1.7.4" >> requirements.txt
+echo "sentence-transformers==2.2.2" >> requirements.txt
+echo "numpy==1.24.3" >> requirements.txt
